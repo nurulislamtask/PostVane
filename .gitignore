@@ -1,0 +1,22 @@
+node_modules/
+data/
+media/
+jobs/
+logs/
+web/dist/
+.DS_Store
+.env
+*.local
+release/
+electron/
+docs/facebook_groups.csv
+campaign/
+.superpowers/
+release-local/
+
+# Android / releases
+android/.gradle/
+android/build/
+android/app/build/
+android/local.properties
+release/

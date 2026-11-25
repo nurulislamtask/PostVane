@@ -44,7 +44,7 @@ test('a post can pick the account; others use the default; the prompt names the 
   const job = getJob(db, jobs[0].id);
   assert.equal(job.account_url, 'https://www.facebook.com/alex.demo.5');
   const prompt = buildPrompt(job, [], {});
-  assert.match(prompt, /"Alex" \(https:\/\/www\.facebook\.com\/alex\.nopal\.5\)/);
+  assert.match(prompt, /"Alex" \(https:\/\/www\.facebook\.com\/alex\.demo\.5\)/);
   assert.match(prompt, /Switch accounts/);
 
   // Without a pick, the job follows the platform's default (Shop, made default above).

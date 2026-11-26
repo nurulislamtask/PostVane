@@ -188,7 +188,7 @@ async function runApiJob(job, media, { paths, settings, provider, mode }) {
  */
 // mode 'check': a later look at a post waiting for group approval (buildCheckPrompt); nothing new is posted.
 export async function runJob(job, media, { paths, settings, claudeBin = findClaude(), mode = 'post', provider = null }) {
-  if (settings.engine !== 'claude') return runApiJob(job, media, { paths, settings, provider, mode });
+  if (settings.engine === 'api') return runApiJob(job, media, { paths, settings, provider, mode });
   if (!claudeBin) {
     return { kind: 'result', raw: null, result: { status: 'failed', clicked_post: false, post_url: null,
       note: 'Claude Code was not found on this computer. Open Setup in the dashboard to install it.' } };

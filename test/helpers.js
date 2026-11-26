@@ -11,6 +11,7 @@ export function setup() {
   const db = openDb(p.db);
   // Most tests run as if Setup's test automation already passed; the readiness tests clear it.
   db.prepare("INSERT OR REPLACE INTO settings(key, value) VALUES ('setup_verified_at', ?)").run(nowIso());
+  db.prepare("INSERT OR REPLACE INTO settings(key, value) VALUES ('engine', 'claude')").run();
   return { home, p, db };
 }
 

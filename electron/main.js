@@ -56,10 +56,11 @@ async function startServer() {
   const { createApp, startWorker, workerPid } = await import('../src/server.js');
   const { paths, PORT, HOST } = await import('../src/config.js');
   const { openDb, getSettings } = await import('../src/db.js');
+  const { createLocalBrowser } = await import('../src/ai/localbrowser.js');
   const p = paths();
   const db = openDb(p.db);
   await new Promise((resolve, reject) => {
-    const server = createApp(db, p).listen(PORT, HOST, resolve);
+    const server = createApp(db, p, { browser: createLocalBrowser({ paths: p, db }) }).listen(PORT, HOST, resolve);
     server.on('error', reject);
   });
   url = `http://${HOST}:${PORT}`;

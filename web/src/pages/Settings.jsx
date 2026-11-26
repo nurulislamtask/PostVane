@@ -1,13 +1,14 @@
 import React, { useEffect, useState } from 'react';
-import { Alert, Box, Button, InputAdornment, MenuItem, Snackbar, Stack, TextField, Typography } from '@mui/material';
+import { Alert, Box, Button, FormControlLabel, InputAdornment, MenuItem, Snackbar, Stack, Switch, TextField, Typography } from '@mui/material';
 import { CalendarX, Clock3, Gauge, Hourglass, RotateCcw, Sparkles, Timer, UsersRound } from 'lucide-react';
 import { api, formatWhen } from '../api.js';
 import { Panel } from '../components.jsx';
+import AiProviders from './AiProviders.jsx';
 
 const FIELDS = [
-  ['daily_cap', 'Max posts per day', 'posts', Gauge, 'Across all destinations. Protects your Facebook account and your Claude usage.'],
+  ['daily_cap', 'Max posts per day', 'posts', Gauge, 'Across all destinations. Protects your accounts and your AI usage.'],
   ['group_gap_minutes', 'Gap between group posts', 'min', UsersRound, 'Between Facebook groups, subreddits and LinkedIn groups on the same platform. Many at once looks like spam.'],
-  ['max_attempts', 'Attempts per post', 'tries', RotateCcw, 'Only retried when Claude confirms it never clicked Post.'],
+  ['max_attempts', 'Attempts per post', 'tries', RotateCcw, 'Only retried when the AI confirms it never clicked Post.'],
   ['job_timeout_min', 'Stop a run after', 'min', Timer, 'Videos need longer. A stopped run is marked "Needs check".'],
 ];
 const JOIN_FIELDS = [
@@ -45,8 +46,20 @@ export default function Settings({ onChange }) {
       <Stack spacing={2.5}>
         {paused && (
           <Alert severity="warning" icon={<Hourglass size={20} />} action={<Button color="inherit" onClick={resume}>Resume now</Button>}>
-            Paused until {formatWhen(s.paused_until)} after hitting a Claude usage limit.
+            Paused until {formatWhen(s.paused_until)} after hitting an AI usage limit.
           </Alert>
+        )}
+        <AiProviders engine={s.engine} onChange={onChange}
+          onEngine={async (engine) => { setS(await api.saveSettings({ engine })); onChange(); }} />
+        {s.engine !== 'claude' && (
+          <Panel title="Posting window">
+            <FormControlLabel control={<Switch checked={s.browser_visible !== '0'}
+              onChange={(e) => setS({ ...s, browser_visible: e.target.checked ? '1' : '0' })} />}
+              label="Show the browser window while it posts" />
+            <Typography variant="body2" color="text.secondary">
+              Visible is more reliable and lets you step in on a security check. Turned off, the window sits off screen.
+            </Typography>
+          </Panel>
         )}
         <Panel title="Pacing and safety">
           <Box sx={{ display: 'grid', gap: 3, gridTemplateColumns: { xs: '1fr', sm: '1fr 1fr' } }}>
@@ -79,7 +92,7 @@ export default function Settings({ onChange }) {
             ))}
           </Box>
         </Panel>
-        <Panel title="Claude">
+        {s.engine === 'claude' && <Panel title="Claude">
           <TextField select fullWidth label="Model" value={s.model} onChange={(e) => setS({ ...s, model: e.target.value })}
             helperText="Runs on your Claude subscription through Claude Code with Chrome. No API key is used."
             slotProps={{ input: { startAdornment: <InputAdornment position="start"><Sparkles size={17} /></InputAdornment> } }}>
@@ -90,7 +103,7 @@ export default function Settings({ onChange }) {
           <Typography variant="body2" color="text.secondary" sx={{ mt: 3 }}>
             Which Facebook (or other) account posts is set on the <a href="#accounts">Accounts</a> page, and per post in Compose.
           </Typography>
-        </Panel>
+        </Panel>}
         {error && <Alert severity="error">{error}</Alert>}
         <Box><Button type="submit" variant="contained" size="large">Save settings</Button></Box>
       </Stack>

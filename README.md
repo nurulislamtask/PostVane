@@ -8,16 +8,32 @@
 ![PostVane](docs/cover.png)
 
 A local social media post scheduler for Facebook, LinkedIn, X, Threads, Reddit, Instagram and TikTok. You write and schedule posts in a React dashboard. At post time, a local
-worker runs **Claude Code on your Claude subscription** with the **Claude in Chrome** extension, and Claude
-publishes the post on the website in your signed-in Chrome, the way you would by hand.
+worker opens **your own Chrome** (one saved login per account) and an **AI model of your choice** reads the page and clicks and types,
+the way you would by hand.
 
-- No Anthropic API, API keys or token billing. The worker removes `ANTHROPIC_API_KEY` and similar variables
-  from Claude's environment and never uses `--bare`, which would bypass the subscription login.
-- No Graph API, Meta, X, LinkedIn, Reddit or TikTok API, and no MCP publishing server. Chrome is the only tool Claude gets.
+- **Free to run.** Use OpenRouter or Google Gemini (both have free models), Ollama on your own computer, OpenAI, Groq or any
+  OpenAI-compatible URL. You can add several and switch in Settings. No paid Claude plan needed.
+- **Or use Claude Code.** If you have a Claude Pro or Max plan, pick the "Claude Code" engine in Settings and posts go through Claude in Chrome instead.
+- No Graph API, Meta, X, LinkedIn, Reddit or TikTok API. Your passwords never leave your Chrome profile.
 
 ```
-Dashboard (React) → Express API → SQLite → worker (every 60s) → claude -p --chrome → Chrome → the social network
+Dashboard (React) → Express API → SQLite → worker (every 60s) → AI model ⇄ your Chrome → the social network
 ```
+
+## AI providers
+
+Open **Settings → AI engine → Add provider**, pick a provider, paste its key, press **Fetch models**, choose one and press **Test**.
+
+| Provider | API URL | Key |
+|---|---|---|
+| OpenRouter | `https://openrouter.ai/api/v1` | [openrouter.ai/keys](https://openrouter.ai/keys) |
+| Google Gemini | `https://generativelanguage.googleapis.com/v1beta/openai` | [aistudio.google.com/apikey](https://aistudio.google.com/apikey) |
+| Ollama | `http://127.0.0.1:11434/v1` | none |
+| OpenAI / Groq / others | their OpenAI-compatible URL | their key |
+
+Any server that speaks the OpenAI chat API works (LM Studio, vLLM, Together, your own). Keys are stored only in this computer's database.
+The AI works from a text list of what is on the page, so a model does not need to see images. Stronger models post more reliably; very small ones
+often get lost on Facebook. If a free model hits its limit, the worker pauses for an hour and tries again.
 
 ## Download
 
@@ -41,16 +57,15 @@ onto the dashboard running on your computer, so you can schedule and check posts
    The dashboard has **no login**, so never expose it to the public internet or an untrusted Wi-Fi.
 3. Install the APK, open it and enter `http://<that address>:4317`.
 
-The first-run **Setup** page walks you through Claude Code, login, Chrome and a test post, about 5 minutes, once.
+The first-run **Setup** page walks you through the AI provider, Chrome, account logins and a test, about 5 minutes, once.
 
 ## Use it
 
-1. **Settings:** if more than one Chrome is connected to Claude, set **Facebook account** to the address
-   `facebook.com/me` lands on, so only that account posts. Edit how Claude describes you when a group asks
-   membership questions.
-2. **Destinations:** add your profile (`https://www.facebook.com/me` works), Pages you can post as, and groups you can post in.
-3. **Compose:** write text, attach photos or one video, tick destinations, pick a time.
-4. **Queue:** watch each post's status and read Claude's report for any run.
+1. **Settings:** add an AI provider (see above) and edit how the AI describes you when a group asks membership questions.
+2. **Accounts:** add each social account and press **Log in**. Sign in once in the Chrome window that opens; PostVane keeps that login.
+3. **Destinations:** add your profile (`https://www.facebook.com/me` works), Pages you can post as, and groups you can post in.
+4. **Compose:** write text, attach photos or one video, tick destinations, pick a time.
+5. **Queue:** watch each post's status and read the AI's report for any run.
 
 ## Platforms
 
@@ -81,12 +96,12 @@ Chrome must be signed in to each account you post to. The group gap applies betw
 
 - **Facebook's terms restrict automated access.** Posting the same content to many groups looks like spam.
   The daily cap (default 10) and group gap (default 20 min) reduce the risk but don't remove it.
-- **Subscription usage.** Each post is a full Claude Code browser session. The first test used about
+- **AI usage (Claude engine).** Each post is a full Claude Code browser session. The first test used about
   25 steps and roughly 730k tokens (mostly cached) on Sonnet, in about 2.5 minutes. That counts against your
   plan's usage limits. When a limit is hit, the worker pauses for 1 hour and requeues the post.
 - **Check the terms yourself.** Make sure that running Claude Code unattended on a schedule is allowed by
   your current Claude subscription terms.
-- **Media size per post: 10 MB.** Uploads go through the Claude in Chrome extension,
+- **Media size.** With an AI provider, files go straight into your Chrome, so full videos fit. With the Claude engine, uploads go through the Claude in Chrome extension,
   whose file upload stops at 10 MB, so most phone videos won't fit.
 - If the computer sleeps, Chrome is closed or Facebook logs you out, posts run late or fail and the dashboard shows it.
   CAPTCHAs and security checks are never bypassed; the post fails and you handle it.

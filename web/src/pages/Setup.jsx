@@ -111,6 +111,10 @@ export default function Setup({ status, onStatusChange, go, onSetupChange }) {
   }
 
   if (!s) return error ? <Alert severity="error">{error}</Alert> : null;
+  if (s.engine === 'api') {
+    return <SetupApi s={s} status={status} onStatusChange={onStatusChange} go={go} check={check} checking={checking}
+      autoTest={autoTest} testAutomation={testAutomation} />;
+  }
   const win = s.platform === 'win32';
   const terminal = win ? 'PowerShell' : 'Terminal';
 
@@ -286,6 +290,65 @@ export default function Setup({ status, onStatusChange, go, onSetupChange }) {
       <Typography variant="caption" color="text.secondary">
         <SquareTerminal size={13} style={{ verticalAlign: '-2px' }} /> Each post is a real Claude session in your Chrome and counts toward
         your plan's usage limits. Social networks restrict automation, so keep the daily cap low.
+      </Typography>
+    </Stack>
+  );
+}
+
+// Setup for the "any AI provider" engine: a provider, Chrome, a logged-in account, a test, the worker.
+function SetupApi({ s, status, onStatusChange, go, check, checking, autoTest, testAutomation }) {
+  const ok = (id) => Boolean(s.readiness.checks.find((c) => c.id === id)?.ok);
+  const providerOk = ok('provider');
+  return (
+    <Stack spacing={2.5} sx={{ maxWidth: 820 }}>
+      <ReadinessCard readiness={s.readiness} verifiedAt={s.verified_at} />
+      {!s.readiness.ready && <Alert severity="info">PostVane drives your own Chrome with an AI model of your choice. Free options exist. This takes a few minutes, once.</Alert>}
+      <Panel title="Get ready" action={
+        <Button size="small" color="secondary" startIcon={<RefreshCw size={15} className={checking ? 'spin' : undefined} />} onClick={check} disabled={checking}>
+          Check again
+        </Button>
+      }>
+        <Step n={1} done={providerOk} title="Add an AI provider">
+          {providerOk ? <>Using <strong>{s.provider.name}</strong> ({s.provider.model}).</> : <>Add OpenRouter, Google Gemini, Ollama or any OpenAI-compatible URL.</>}
+          <Box mt={1.25}><Button variant={providerOk ? 'outlined' : 'contained'} onClick={() => go('settings')}>Open Settings</Button></Box>
+        </Step>
+        <Step n={2} done={ok('chrome')} title="Install Google Chrome (or Edge)">
+          {ok('chrome')
+            ? <>Found at <Box component="code" sx={{ fontSize: 12, wordBreak: 'break-all' }}>{s.chrome_path}</Box></>
+            : <>PostVane uses the browser already on your computer. <Link href="https://www.google.com/chrome/" target="_blank" rel="noreferrer">Get Chrome</Link>, then press Check again.</>}
+        </Step>
+        <Step n={3} done={ok('extension')} title="Log in to your accounts">
+          {s.app_accounts > 0
+            ? <><strong>{s.app_accounts} account{s.app_accounts === 1 ? '' : 's'} logged in.</strong> Each one keeps its own saved login.</>
+            : <>Add an account, press Log in and sign in to the site in the window that opens. PostVane notices on its own.</>}
+          <Box mt={1.25}><Button variant={ok('extension') ? 'outlined' : 'contained'} startIcon={<LogIn size={16} />} onClick={() => go('accounts')}>Open Accounts</Button></Box>
+        </Step>
+        <Step n={4} done={ok('automation')} title="Run a test automation">
+          <Typography fontSize={14} mb={1.25}>
+            The AI opens one of your logged-in accounts, checks it is signed in and stops. It doesn't post, like or click anything that changes anything.
+          </Typography>
+          <Button variant="contained" startIcon={<Workflow size={16} />}
+            disabled={!providerOk || !ok('chrome') || !ok('extension') || autoTest === 'running'} onClick={testAutomation}>
+            {autoTest === 'running' ? 'Running… (up to 4 minutes)' : s.verified_at ? 'Run the test again' : 'Run test automation'}
+          </Button>
+          {autoTest && autoTest !== 'running' && (autoTest.ok
+            ? <Alert severity={autoTest.facebook_signed_in ? 'success' : 'warning'} sx={{ mt: 1.25 }}>
+                The AI drove the browser end to end. {autoTest.facebook_signed_in ? 'The account is signed in.' : "The account isn't signed in there: log in again on the Accounts page."}
+                {autoTest.note ? ` (${autoTest.note})` : ''}
+              </Alert>
+            : <Alert severity="error" sx={{ mt: 1.25 }}>The test didn't pass{autoTest.error ? `: ${autoTest.error}` : '.'}</Alert>)}
+        </Step>
+        <Step n={5} done={Boolean(status?.worker_running)} title="Start the worker">
+          <Typography fontSize={14} mb={1.25}>The worker posts everything at its scheduled time. Keep this computer on and awake.</Typography>
+          {status && !status.worker_running && (
+            <WorkerControl status={status} onChange={onStatusChange}
+              blocked={s.readiness.ready ? null : 'Finish steps 1–4 first: scheduled posts are on hold until every check passes'} />
+          )}
+          {status?.worker_running && <Chip color="success" icon={<Play size={14} />} label="Worker running" />}
+        </Step>
+      </Panel>
+      <Typography variant="caption" color="text.secondary">
+        Social networks restrict automation, so keep the daily cap low. Free models are slower and less reliable than strong ones.
       </Typography>
     </Stack>
   );

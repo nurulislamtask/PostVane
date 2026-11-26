@@ -1,6 +1,6 @@
 {
   "name": "postvane",
-  "version": "1.1.0",
+  "version": "1.2.0",
   "private": true,
   "description": "Schedule social media posts; Claude Code publishes them in your own Chrome on your Claude subscription. Windows, macOS and an Android companion app.",
   "type": "module",

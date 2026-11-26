@@ -30,7 +30,9 @@ export const HOST = process.env.POSTVANE_HOST || '127.0.0.1';
 // window, so big videos (TikTok, Reels) fit: up to 4 GB.
 export const CHROME_MAX_BYTES = 10 * 1024 * 1024;
 export const APP_MAX_BYTES = 4 * 1024 * 1024 * 1024;
-const DESKTOP = process.env.POSTVANE_APP_BROWSER === '1';
+// With the 'api' engine files go straight into your Chrome, so large videos are fine. The Claude engine's Chrome extension
+// stops at 10 MB: runner.js refuses bigger files for that engine when the post runs.
+const DESKTOP = true;
 export const LIMITS = {
   maxFileBytes: DESKTOP ? APP_MAX_BYTES : CHROME_MAX_BYTES,
   maxTotalBytes: DESKTOP ? APP_MAX_BYTES : CHROME_MAX_BYTES,

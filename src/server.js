@@ -3,7 +3,11 @@ import multer from 'multer';
 import fs from 'node:fs';
 import os from 'node:os';
 import { spawnNodeScript, findClaude, claudeAuthStatus, openTerminal, CLAUDE_INSTALL_COMMAND, claudeLoginCommand, IN_ELECTRON, findClaudeExtension } from './platform.js';
-import { testChromeConnection, runTestAutomation, composePost, composeComment, composeImages, IMAGE_SIZES } from './runner.js';
+import { testChromeConnection, runTestAutomation, runApiTest, composePost, composeComment, composeImages, IMAGE_SIZES } from './runner.js';
+import { PRESETS, chat, listModels, LlmError } from './ai/llm.js';
+import { listProviders, getProvider, getActiveProvider, addProvider, updateProvider, deleteProvider, ProviderError } from './ai/providers.js';
+import { findChrome } from './ai/cdp.js';
+import { createLocalBrowser } from './ai/localbrowser.js';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { paths as getPaths, PORT, HOST, LIMITS, sizeLabel } from './config.js';
@@ -240,21 +244,21 @@ export function createApp(db, p, { browser } = {}) {
   // Any click in PostVane's own screen (the sidebar beside the in-app browser) closes that browser.
   app.post('/api/browser/close', async (req, res) => { await browser?.closePane?.({ minAge: 1000 }); res.json({ closed: true }); });
   const accountForLogin = (id) => {
-    if (!browser) throw new HttpError(409, 'Logging in works in the PostVane desktop app');
+    if (!browser) throw new HttpError(409, 'Logging in works in the PostVane desktop app or when you run npm start');
     const a = db.prepare('SELECT * FROM accounts WHERE id = ?').get(id);
     if (!a) throw new HttpError(404, 'Account not found');
     return a;
   };
   // Opens the platform's login page in an PostVane window; the account turns Connected when the login is saved.
-  app.post('/api/accounts/:id/login', (req, res) => {
+  app.post('/api/accounts/:id/login', async (req, res) => {
     const a = accountForLogin(req.params.id);
-    browser.login(a);
+    try { await browser.login(a); } catch (e) { throw new HttpError(409, e.message); }
     res.json({ opened: true });
   });
   // Opens the account's feed in an PostVane window, e.g. to check a post went out.
-  app.post('/api/accounts/:id/open', (req, res) => {
+  app.post('/api/accounts/:id/open', async (req, res) => {
     const a = accountForLogin(req.params.id);
-    browser.open(a);
+    try { await browser.open(a); } catch (e) { throw new HttpError(409, e.message); }
     res.json({ opened: true });
   });
   app.post('/api/accounts/:id/logout', async (req, res) => {
@@ -283,6 +287,12 @@ export function createApp(db, p, { browser } = {}) {
     res.json(listAccounts());
   });
 
+  // Which AI writes in Compose: the provider chosen in Settings, or Claude Code when that engine is picked.
+  const writerOpts = () => {
+    const st = getSettings(db);
+    return st.engine === 'claude' ? { model: st.model || 'sonnet' } : { apiEngine: true, provider: getActiveProvider(db) };
+  };
+
   // ---- the AI writer in Compose: Claude (on the person's own subscription) writes post options from a brief.
   app.post('/api/ai/compose', async (req, res) => {
     const b = req.body ?? {};
@@ -303,7 +313,7 @@ export function createApp(db, p, { browser } = {}) {
       limit: b.length === 'custom' && Number(b.limit_n) > 0
         ? { n: Math.min(Math.round(Number(b.limit_n)), b.limit_unit === 'characters' ? 5000 : 1000), unit: b.limit_unit === 'characters' ? 'characters' : 'words' } : null,
       emojis: Boolean(b.emojis), hashtags: Boolean(b.hashtags), noSlop: Boolean(b.no_slop),
-    }, { model: getSettings(db).model || 'sonnet' });
+    }, writerOpts());
     if (out.error) throw new HttpError(502, out.error);
     res.json(out);
   });
@@ -315,7 +325,7 @@ export function createApp(db, p, { browser } = {}) {
       kind: ['link', 'question', 'details', 'thanks'].includes(b.kind) ? b.kind : 'link',
       language: String(b.language ?? '').replace(/[^\p{L}\p{M} ()'-]/gu, '').trim().slice(0, 40) || 'English',
       emojis: b.emojis !== false, noSlop: Boolean(b.no_slop),
-    }, { model: getSettings(db).model || 'sonnet' });
+    }, writerOpts());
     if (out.error) throw new HttpError(502, out.error);
     res.json(out);
   });
@@ -335,7 +345,7 @@ export function createApp(db, p, { browser } = {}) {
     const out = await composeImages({
       brief, post: String(b.post ?? '').slice(0, 3000), kind: clean(b.kind), style: clean(b.style), colors: clean(b.colors), size,
       language: String(b.language ?? '').replace(/[^\p{L}\p{M} ()'-]/gu, '').trim().slice(0, 40) || 'English', photos: photos.length,
-    }, { model: getSettings(db).model || 'sonnet' });
+    }, writerOpts());
     const withPhotos = (html) => photos.reduce((h, src, i) => h.replaceAll(`{{PHOTO${i + 1}}}`, src), html.replaceAll('{{PHOTO}}', photos[0] ?? ''));
     if (out.error) throw new HttpError(502, out.error);
     const [w, h] = IMAGE_SIZES[size];
@@ -680,12 +690,13 @@ export function createApp(db, p, { browser } = {}) {
   // ---- first-run setup: Claude Code installed and logged in with a Claude subscription, the Chrome extension
   // installed, and a test automation that drove Chrome end to end. Scheduled posts wait until all four pass.
   function setupState() {
+    if (getSettings(db).engine !== 'claude') return apiSetupState();
     const bin = findClaude();
     const auth = claudeAuthStatus(bin);
     const settings = getSettings(db);
     const s = {
       platform: process.platform,
-      app: IN_ELECTRON && Boolean(browser),
+      app: Boolean(browser),
       claude_path: bin,
       claude_installed: Boolean(bin),
       logged_in: Boolean(auth?.loggedIn),
@@ -715,6 +726,29 @@ export function createApp(db, p, { browser } = {}) {
     return s;
   }
 
+  // The 'api' engine: an AI provider + the person's Chrome. No Claude subscription involved.
+  function apiSetupState() {
+    const settings = getSettings(db);
+    const provider = getActiveProvider(db);
+    const chrome = findChrome();
+    const s = {
+      platform: process.platform, engine: 'api', app: Boolean(browser),
+      provider: provider ? { id: provider.id, name: provider.name, model: provider.model } : null,
+      chrome_path: chrome, chrome_installed: Boolean(chrome),
+      app_accounts: db.prepare("SELECT COUNT(*) AS n FROM accounts WHERE login_state = 'connected'").get().n,
+      verified_at: settings.setup_verified_at || null,
+    };
+    const sameProvider = !settings.setup_verified_account || settings.setup_verified_account === `api:${provider?.id}`;
+    const checks = [
+      { id: 'provider', label: 'An AI provider is set up', todo: 'add an AI provider in Settings', ok: Boolean(provider) },
+      { id: 'chrome', label: 'Chrome or Edge is installed', todo: 'install Google Chrome', ok: s.chrome_installed },
+      { id: 'extension', label: 'An account is logged in', todo: 'log in to an account on the Accounts page', ok: s.app_accounts > 0 },
+      { id: 'automation', label: 'Test automation passed', todo: 'run the test automation', ok: Boolean(s.verified_at) && sameProvider },
+    ];
+    s.readiness = { ready: checks.every((c) => c.ok), checks };
+    return s;
+  }
+
   app.get('/api/setup', (req, res) => res.json(setupState()));
   // Asks Claude to list the Chrome browsers it can reach. Uses a tiny amount of the person's Claude usage.
   app.post('/api/setup/test-chrome', async (req, res) => {
@@ -732,6 +766,13 @@ export function createApp(db, p, { browser } = {}) {
     testRunning = true;
     let result;
     try {
+      if (s.engine === 'api') {
+        const account = db.prepare("SELECT * FROM accounts WHERE login_state = 'connected' ORDER BY is_default DESC, id LIMIT 1").get();
+        result = await runApiTest(getActiveProvider(db), p, account, { visible: getSettings(db).browser_visible !== '0' });
+        setSetting(db, 'setup_verified_at', result.ok ? nowIso() : '');
+        setSetting(db, 'setup_verified_account', result.ok ? `api:${s.provider.id}` : '');
+        return res.json({ ...result, setup: setupState() });
+      }
       // With an account logged in inside the app, the test drives the app's own window instead of Chrome.
       const account = browser ? db.prepare("SELECT * FROM accounts WHERE login_state = 'connected' ORDER BY is_default DESC, id LIMIT 1").get() : null;
       result = await runTestAutomation(s.claude_path, p, { model: getSettings(db).model, account });
@@ -754,6 +795,47 @@ export function createApp(db, p, { browser } = {}) {
     res.json({ opened: true });
   });
 
+  // ---- AI providers (the 'api' engine and the Compose writer)
+  const providerView = () => ({ providers: listProviders(db), presets: PRESETS, engine: getSettings(db).engine });
+  const providerFrom = (body, id) => {
+    const saved = id ? getProvider(db, id) : null;
+    return { base_url: String(body.base_url ?? saved?.base_url ?? '').trim(), model: String(body.model ?? saved?.model ?? '').trim(),
+      api_key: body.api_key === undefined || body.api_key === '' ? (saved?.api_key ?? '') : String(body.api_key).trim() };
+  };
+  app.get('/api/ai/providers', (req, res) => res.json(providerView()));
+  app.post('/api/ai/providers', (req, res) => {
+    try { addProvider(db, req.body ?? {}); } catch (e) { if (e instanceof ProviderError) throw new HttpError(400, e.message); throw e; }
+    res.status(201).json(providerView());
+  });
+  app.patch('/api/ai/providers/:id', (req, res) => {
+    let ok;
+    try { ok = updateProvider(db, Number(req.params.id), req.body ?? {}); } catch (e) { if (e instanceof ProviderError) throw new HttpError(400, e.message); throw e; }
+    if (!ok) throw new HttpError(404, 'Provider not found');
+    res.json(providerView());
+  });
+  app.delete('/api/ai/providers/:id', (req, res) => { deleteProvider(db, Number(req.params.id)); res.json(providerView()); });
+  app.post('/api/ai/providers/:id/activate', (req, res) => {
+    if (!getProvider(db, Number(req.params.id))) throw new HttpError(404, 'Provider not found');
+    setSetting(db, 'ai_provider_id', String(Number(req.params.id)));
+    res.json(providerView());
+  });
+  // Sends one tiny request, to check the URL, key and model.
+  app.post('/api/ai/providers/test', async (req, res) => {
+    const prov = providerFrom(req.body ?? {}, req.body?.id);
+    const t0 = Date.now();
+    try {
+      const { text } = await chat(prov, [{ role: 'user', content: 'Reply with the single word OK.' }], { maxTokens: 20, retries: 0, timeoutMs: 60_000 });
+      res.json({ ok: true, ms: Date.now() - t0, reply: text.trim().slice(0, 60) });
+    } catch (e) {
+      res.json({ ok: false, error: e instanceof LlmError ? e.message : String(e.message) });
+    }
+  });
+  // The model names the provider offers, for the dropdown.
+  app.post('/api/ai/models', async (req, res) => {
+    try { res.json({ models: await listModels(providerFrom(req.body ?? {}, req.body?.id)) }); }
+    catch (e) { res.json({ models: [], error: e instanceof LlmError ? e.message : String(e.message) }); }
+  });
+
   // ---- settings & status
   app.get('/api/settings', (req, res) => res.json(getSettings(db)));
 
@@ -768,6 +850,14 @@ export function createApp(db, p, { browser } = {}) {
       } else if (key === 'model') {
         if (!MODELS.has(value)) throw new HttpError(400, 'Model must be sonnet, opus or haiku');
         setSetting(db, key, value);
+      } else if (key === 'engine') {
+        if (!['api', 'claude'].includes(value)) throw new HttpError(400, 'Engine must be api or claude');
+        if (value !== getSettings(db).engine) {
+          setSetting(db, key, value);
+          setSetting(db, 'setup_verified_at', ''); // the test has to pass again with the new engine
+        }
+      } else if (key === 'browser_visible') {
+        setSetting(db, key, value === '0' || value === false ? '0' : '1');
       } else if (key === 'join_about') {
         const text = String(value ?? '').trim();
         if (text.length < 10 || text.length > 500) throw new HttpError(400, 'The join answer must be 10–500 characters');
@@ -847,7 +937,7 @@ export function createApp(db, p, { browser } = {}) {
 if (process.argv[1] === fileURLToPath(import.meta.url)) {
   const p = getPaths();
   const db = openDb(p.db);
-  createApp(db, p).listen(PORT, HOST, () => {
+  createApp(db, p, { browser: createLocalBrowser({ paths: p, db }) }).listen(PORT, HOST, () => {
     console.log(`PostVane dashboard: http://${HOST}:${PORT}`);
   });
 }

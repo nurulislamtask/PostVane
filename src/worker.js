@@ -1,6 +1,7 @@
 import fs from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { paths as getPaths } from './config.js';
+import { getActiveProvider } from './ai/providers.js';
 import { openDb, getSettings, setSetting, getJob, getPostMedia, nowIso, tx, setAccountLogin } from './db.js';
 import { runJob as defaultRunJob } from './runner.js';
 
@@ -137,7 +138,7 @@ export function recordOutcome(db, job, outcome, settings, now) {
   if (outcome.kind === 'usage_limit') {
     setSetting(db, 'paused_until', nowIso(new Date(now.getTime() + USAGE_PAUSE_MIN * 60_000)));
     db.prepare(`UPDATE jobs SET status = 'queued', attempts = attempts - 1, started_at = NULL, last_error = ?
-      WHERE id = ?`).run(`Claude usage limit reached; paused ${USAGE_PAUSE_MIN} min. ${outcome.error}`, job.id);
+      WHERE id = ?`).run(`AI usage limit reached; paused ${USAGE_PAUSE_MIN} min. ${outcome.error}`, job.id);
     return 'queued';
   }
 
@@ -244,7 +245,7 @@ export async function tick(db, { paths, runJob = defaultRunJob, now = () => new 
     if (check) {
       let outcome;
       try {
-        outcome = await runJob(check, [], { paths, settings, mode: 'check' });
+        outcome = await runJob(check, [], { paths, settings, mode: 'check', provider: getActiveProvider(db) });
       } catch (err) {
         outcome = { kind: 'ambiguous', error: `Runner crashed: ${err.message}` };
       }
@@ -255,7 +256,7 @@ export async function tick(db, { paths, runJob = defaultRunJob, now = () => new 
 
   let outcome;
   try {
-    outcome = await runJob(job, getPostMedia(db, job.post_id), { paths, settings });
+    outcome = await runJob(job, getPostMedia(db, job.post_id), { paths, settings, provider: getActiveProvider(db) });
   } catch (err) {
     outcome = { kind: 'ambiguous', error: `Runner crashed: ${err.message}` };
   }

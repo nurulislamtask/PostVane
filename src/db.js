@@ -88,12 +88,21 @@ export const DEFAULT_SETTINGS = {
   // holds scheduled posts; "Post now" still works because the person asked for it.
   setup_verified_at: '',
   setup_verified_account: '',
+  // 'api': the AI provider chosen in Settings drives PostVane's own Chrome (free options exist). 'claude': Claude Code + Claude in Chrome.
+  engine: 'api',
+  ai_provider_id: '',
+  // '1': the posting window is on screen while it works, so you can step in on a security check.
+  browser_visible: '1',
 };
 
 export function openDb(file) {
   const db = new DatabaseSync(file);
   db.exec('PRAGMA journal_mode = WAL; PRAGMA foreign_keys = ON; PRAGMA busy_timeout = 5000;');
   db.exec(SCHEMA);
+  // AI providers (any OpenAI-compatible API) for the 'api' engine; see src/ai/providers.js.
+  db.exec(`CREATE TABLE IF NOT EXISTS ai_providers(
+    id INTEGER PRIMARY KEY, name TEXT NOT NULL, kind TEXT NOT NULL, base_url TEXT NOT NULL,
+    api_key TEXT NOT NULL DEFAULT '', model TEXT NOT NULL, vision INTEGER NOT NULL DEFAULT 0)`);
   // Databases created before multi-platform support get the column; existing rows become 'facebook'.
   const cols = db.prepare('PRAGMA table_info(destinations)').all().map((c) => c.name);
   if (!cols.includes('platform')) {

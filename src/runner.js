@@ -6,6 +6,9 @@ import { ALL_HOSTS } from './platforms.js';
 import { findClaude, spawnClaude, envWithClaude, killTree } from './platform.js';
 import { CHROME_MAX_BYTES } from './config.js';
 import { SLOP_RULES, findSlop } from './slop.js';
+import { runInBrowser, finishToBlock, writeLog } from './ai/agent.js';
+import { chat, extractJson, LlmError } from './ai/llm.js';
+import { profileDir } from './ai/localbrowser.js';
 
 // Anything here would switch Claude Code off the subscription login and onto paid API billing.
 const BILLING_ENV = [
@@ -122,6 +125,61 @@ export function looksLikeUsageLimit(text) {
   return /usage limit|rate limit|limit reached|out of (extra )?usage|5-hour limit|weekly limit/i.test(text || '');
 }
 
+
+// ---- the 'api' engine: any OpenAI-compatible model drives PostVane's own Chrome, one profile folder per account.
+async function runApiJob(job, media, { paths, settings, provider, mode }) {
+  const notPosted = (status, note) => ({ kind: 'result', raw: null, result: { status, clicked_post: false, post_url: null, note } });
+  if (!provider) return notPosted('failed', 'No AI provider is set up. Open Settings → AI provider and add one.');
+  if (!job.account_ref) return notPosted('failed', 'This post has no account. Add the account on the Accounts page.');
+  if (job.account_login_state !== 'connected') {
+    return notPosted('needs_login', `Log in to "${job.account_name}" on the Accounts page first. This post goes out after that.`);
+  }
+  const workDir = path.join(paths.jobs, String(job.id));
+  fs.mkdirSync(workDir, { recursive: true });
+  const mediaPaths = media.map((m) => {
+    const dest = path.join(workDir, path.basename(m.path));
+    fs.rmSync(dest, { force: true });
+    try { fs.linkSync(m.path, dest); } catch { fs.copyFileSync(m.path, dest); }
+    return dest;
+  });
+  const prompt = mode === 'check'
+    ? buildCheckPrompt(job, settings, { browser: 'app' })
+    : buildPrompt(job, mediaPaths, settings, { browser: 'app' });
+  const timeoutMs = Number(settings.job_timeout_min) * 60_000;
+  const logFile = path.join(paths.logs, mode === 'check'
+    ? `job-${job.id}-check-${(job.approval_checks || 0) + 1}.json`
+    : `job-${job.id}-attempt-${job.attempts}.json`);
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), timeoutMs);
+  let res = null;
+  let failure = null;
+  try {
+    res = await runInBrowser({ provider, profileDir: profileDir(paths, job.account_ref), prompt, allowedFiles: mediaPaths,
+      signal: controller.signal, visible: settings.browser_visible !== '0' });
+  } catch (e) {
+    failure = e;
+  } finally {
+    clearTimeout(timer);
+  }
+  writeLog(logFile, { engine: 'api', provider: provider.name, model: provider.model, steps: res?.transcript || failure?.transcript, error: failure ? String(failure.message) : null });
+
+  if (failure) {
+    if (failure.kind === 'rate_limit') return { kind: 'usage_limit', error: `${provider.name}: ${failure.message}` };
+    if (failure.kind === 'auth') return notPosted('failed', `${provider.name} refused the API key. Check it in Settings → AI provider.`);
+    const why = controller.signal.aborted ? `Timed out after ${settings.job_timeout_min} min` : failure.message;
+    // A crash after a send button was clicked may have posted: a person has to check, and it is never retried.
+    if (failure.clickedSubmit) return { kind: 'ambiguous', error: why, raw: null };
+    return notPosted('failed', why);
+  }
+  if (!res.finished) {
+    return res.clickedSubmit
+      ? { kind: 'ambiguous', error: `The model ran out of steps after clicking a send button`, raw: null }
+      : notPosted('failed', 'The model did not finish within its step limit. Try a stronger model.');
+  }
+  const result = parseResultBlock(finishToBlock(res, { mode }));
+  return result ? { kind: 'result', result, raw: { steps: res.steps } } : { kind: 'ambiguous', error: 'Unreadable result from the model', raw: null };
+}
+
 /**
  * Runs one job through Claude Code and classifies the outcome:
  *   { kind: 'result', result, raw }   Claude returned a valid status block
@@ -129,7 +187,8 @@ export function looksLikeUsageLimit(text) {
  *   { kind: 'ambiguous', error, raw } crash, timeout or unreadable output: may or may not have posted
  */
 // mode 'check': a later look at a post waiting for group approval (buildCheckPrompt); nothing new is posted.
-export async function runJob(job, media, { paths, settings, claudeBin = findClaude(), mode = 'post' }) {
+export async function runJob(job, media, { paths, settings, claudeBin = findClaude(), mode = 'post', provider = null }) {
+  if (settings.engine !== 'claude') return runApiJob(job, media, { paths, settings, provider, mode });
   if (!claudeBin) {
     return { kind: 'result', raw: null, result: { status: 'failed', clicked_post: false, post_url: null,
       note: 'Claude Code was not found on this computer. Open Setup in the dashboard to install it.' } };
@@ -147,7 +206,7 @@ export async function runJob(job, media, { paths, settings, claudeBin = findClau
 
   let route = { browser: 'chrome' };
   let appSession = null;
-  if (usesApp(job)) {
+  if (usesApp(job) && appBrowser(paths)) {
     const notPosted = (status, note) => ({ kind: 'result', raw: null, result: { status, clicked_post: false, post_url: null, note } });
     const info = appBrowser(paths);
     if (!info) return notPosted('failed', `"${job.account_name}" is logged in inside the PostVane app, but the app isn't running. Open PostVane.`);
@@ -379,7 +438,20 @@ export function buildCommentPrompt({ post = '', notes = '', kind = 'link', langu
 }
 
 // Runs one text-only Claude request (no tools) and returns its JSON reply, or { error }.
-async function runWriter(prompt, { claudeBin, model, timeoutMs }) {
+async function runWriter(prompt, { claudeBin, model, timeoutMs, apiEngine = false, provider = null }) {
+  if (apiEngine) {
+    if (!provider) return { error: 'Add an AI provider in Settings first.' };
+    try {
+      const { text } = await chat(provider, [
+        { role: 'system', content: 'You are a careful writing assistant. Follow the instructions exactly. When asked for JSON, reply with that JSON only.' },
+        { role: 'user', content: prompt },
+      ], { timeoutMs, maxTokens: 4000, temperature: 0.7 });
+      const reply = extractJson(text);
+      return reply ? { reply } : { error: 'The model did not return the expected format. Try again or pick a stronger model.' };
+    } catch (e) {
+      return { error: e instanceof LlmError ? e.message : `AI request failed: ${e.message}` };
+    }
+  }
   if (!claudeBin) return { error: 'Claude Code is not set up yet. Finish Setup first.' };
   const workDir = fs.mkdtempSync(path.join(os.tmpdir(), 'postvane-write-'));
   try {
@@ -413,21 +485,21 @@ async function deSlop(texts, opts) {
   return fixed ? fixed.map((t, i) => (better(t, i) ? t : texts[i])) : texts;
 }
 
-export async function composeComment(input, { claudeBin = findClaude(), model = 'sonnet', timeoutMs = 90_000 } = {}) {
-  const { reply, error } = await runWriter(buildCommentPrompt(input), { claudeBin, model, timeoutMs });
+export async function composeComment(input, { claudeBin = findClaude(), model = 'sonnet', timeoutMs = 90_000, apiEngine = false, provider = null } = {}) {
+  const { reply, error } = await runWriter(buildCommentPrompt(input), { claudeBin, model, timeoutMs, apiEngine, provider });
   if (error) return { error };
   let options = (reply.options || []).map((o) => String(typeof o === 'string' ? o : o?.text || '').trim()).filter(Boolean);
-  if (input.noSlop && options.length) options = await deSlop(options, { claudeBin, model, timeoutMs });
+  if (input.noSlop && options.length) options = await deSlop(options, { claudeBin, model, timeoutMs, apiEngine, provider });
   return options.length ? { options } : { error: 'Claude did not return a comment. Try again.' };
 }
 
-export async function composePost(input, { claudeBin = findClaude(), model = 'sonnet', timeoutMs = 120_000 } = {}) {
-  const { reply, error } = await runWriter(buildComposePrompt(input), { claudeBin, model, timeoutMs });
+export async function composePost(input, { claudeBin = findClaude(), model = 'sonnet', timeoutMs = 120_000, apiEngine = false, provider = null } = {}) {
+  const { reply, error } = await runWriter(buildComposePrompt(input), { claudeBin, model, timeoutMs, apiEngine, provider });
   if (error) return { error };
   const options = (reply.options || []).map((o) => ({ body: String(o.body || '').trim(), first_comment: String(o.first_comment || '').trim() }))
     .filter((o) => o.body);
   if (input.noSlop && options.length) {
-    const bodies = await deSlop(options.map((o) => o.body), { claudeBin, model, timeoutMs });
+    const bodies = await deSlop(options.map((o) => o.body), { claudeBin, model, timeoutMs, apiEngine, provider });
     bodies.forEach((b, i) => { options[i].body = b; });
   }
   return options.length ? { options } : { error: 'Claude did not return a post. Try again.' };
@@ -461,9 +533,36 @@ export function buildImagePrompt({ brief = '', post = '', kind = '', style = '',
   ].filter(Boolean).join('\n\n');
 }
 
-export async function composeImages(input, { claudeBin = findClaude(), model = 'sonnet', timeoutMs = 180_000 } = {}) {
-  const { reply, error } = await runWriter(buildImagePrompt(input), { claudeBin, model, timeoutMs });
+export async function composeImages(input, { claudeBin = findClaude(), model = 'sonnet', timeoutMs = 180_000, apiEngine = false, provider = null } = {}) {
+  const { reply, error } = await runWriter(buildImagePrompt(input), { claudeBin, model, timeoutMs, apiEngine, provider });
   if (error) return { error };
   const designs = (reply.designs || []).map((d) => String(typeof d === 'string' ? d : d?.html || '')).filter((h) => /<html|<body|<div/i.test(h));
   return designs.length ? { designs } : { error: 'Claude did not return a design. Try again.' };
+}
+
+/**
+ * The setup test for the 'api' engine: the model opens the platform's home page in the account's own window, looks, and
+ * says whether the account is signed in. Nothing is posted. Returns { ok, facebook_signed_in, note, error }.
+ */
+export async function runApiTest(provider, paths, account, { timeoutMs = 240_000, visible = true } = {}) {
+  const home = { facebook: 'https://www.facebook.com/', instagram: 'https://www.instagram.com/', threads: 'https://www.threads.com/',
+    x: 'https://x.com/home', linkedin: 'https://www.linkedin.com/feed/', reddit: 'https://www.reddit.com/', tiktok: 'https://www.tiktok.com/' }[account.platform];
+  const prompt = `This is PostVane's setup test for the account "${account.name}". Do NOT post, type, like, comment, follow or click anything that changes the account. Only look.
+1. navigate to ${home}
+2. wait 3 seconds, then snapshot. A feed or a compose box means the account is signed in; a login form means it is not.
+3. Call finish: status "submitted" if signed in, "needs_login" if you see a login form, otherwise "failed". clicked_post is false. Put one short sentence in note.`;
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), timeoutMs);
+  try {
+    const res = await runInBrowser({ provider, profileDir: profileDir(paths, account.id), prompt, allowedFiles: [], signal: controller.signal, maxSteps: 14, visible });
+    const note = typeof res.finish?.note === 'string' ? res.finish.note.slice(0, 300) : '';
+    if (!res.finished) return { ok: false, facebook_signed_in: false, note: '', error: 'The model did not finish the test. Try a stronger model.' };
+    const signedIn = res.finish.status === 'submitted';
+    return { ok: true, facebook_signed_in: signedIn, note, error: null };
+  } catch (e) {
+    const error = controller.signal.aborted ? 'The test took too long.' : e.message;
+    return { ok: false, facebook_signed_in: false, note: '', error };
+  } finally {
+    clearTimeout(timer);
+  }
 }

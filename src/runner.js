@@ -7,7 +7,8 @@ import { findClaude, spawnClaude, envWithClaude, killTree } from './platform.js'
 import { CHROME_MAX_BYTES } from './config.js';
 import { SLOP_RULES, findSlop } from './slop.js';
 import { runInBrowser, finishToBlock, writeLog } from './ai/agent.js';
-import { chat, extractJson, LlmError } from './ai/llm.js';
+import { extractJson, LlmError } from './ai/llm.js';
+import { asPool } from './ai/pool.js';
 import { profileDir } from './ai/localbrowser.js';
 
 // Anything here would switch Claude Code off the subscription login and onto paid API billing.
@@ -129,7 +130,7 @@ export function looksLikeUsageLimit(text) {
 // ---- the 'api' engine: any OpenAI-compatible model drives PostVane's own Chrome, one profile folder per account.
 async function runApiJob(job, media, { paths, settings, provider, mode }) {
   const notPosted = (status, note) => ({ kind: 'result', raw: null, result: { status, clicked_post: false, post_url: null, note } });
-  if (!provider) return notPosted('failed', 'No AI provider is set up. Open Settings → AI provider and add one.');
+  if (!provider) return notPosted('failed', 'No AI model is switched on. Open Settings → AI engine and add one.');
   if (!job.account_ref) return notPosted('failed', 'This post has no account. Add the account on the Accounts page.');
   if (job.account_login_state !== 'connected') {
     return notPosted('needs_login', `Log in to "${job.account_name}" on the Accounts page first. This post goes out after that.`);
@@ -161,11 +162,11 @@ async function runApiJob(job, media, { paths, settings, provider, mode }) {
   } finally {
     clearTimeout(timer);
   }
-  writeLog(logFile, { engine: 'api', provider: provider.name, model: provider.model, steps: res?.transcript || failure?.transcript, error: failure ? String(failure.message) : null });
+  writeLog(logFile, { engine: 'api', models_used: [...(provider.used || [])], steps: res?.transcript || failure?.transcript, error: failure ? String(failure.message) : null });
 
   if (failure) {
-    if (failure.kind === 'rate_limit') return { kind: 'usage_limit', error: `${provider.name}: ${failure.message}` };
-    if (failure.kind === 'auth') return notPosted('failed', `${provider.name} refused the API key. Check it in Settings → AI provider.`);
+    if (failure.kind === 'rate_limit') return { kind: 'usage_limit', error: failure.message };
+    if (failure.kind === 'auth') return notPosted('failed', `An AI key was refused (${failure.message}). Check Settings → AI engine.`);
     const why = controller.signal.aborted ? `Timed out after ${settings.job_timeout_min} min` : failure.message;
     // A crash after a send button was clicked may have posted: a person has to check, and it is never retried.
     if (failure.clickedSubmit) return { kind: 'ambiguous', error: why, raw: null };
@@ -440,9 +441,9 @@ export function buildCommentPrompt({ post = '', notes = '', kind = 'link', langu
 // Runs one text-only Claude request (no tools) and returns its JSON reply, or { error }.
 async function runWriter(prompt, { claudeBin, model, timeoutMs, apiEngine = false, provider = null }) {
   if (apiEngine) {
-    if (!provider) return { error: 'Add an AI provider in Settings first.' };
+    if (!provider) return { error: 'Add an AI model in Settings first.' };
     try {
-      const { text } = await chat(provider, [
+      const { text } = await asPool(provider).chat([
         { role: 'system', content: 'You are a careful writing assistant. Follow the instructions exactly. When asked for JSON, reply with that JSON only.' },
         { role: 'user', content: prompt },
       ], { timeoutMs, maxTokens: 4000, temperature: 0.7 });

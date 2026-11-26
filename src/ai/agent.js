@@ -1,7 +1,8 @@
 // The browser agent: the model looks at the page (a numbered list of what is on screen), picks one tool per turn, and
 // PostVane runs it in a real Chrome window with the account's own saved login.
 import fs from 'node:fs';
-import { chat, extractJson, LlmError } from './llm.js';
+import { extractJson, LlmError } from './llm.js';
+import { asPool } from './pool.js';
 import { launchChrome } from './cdp.js';
 import { createTools, TOOL_HELP } from './tools.js';
 
@@ -38,7 +39,8 @@ function compact(messages, keep = 3) {
  * Throws LlmError (rate limit, bad key, no network) when the model can't be reached.
  */
 export async function runAgent({ provider, session, prompt, allowedFiles = [], maxSteps = 45, signal, onStep, hosts, allowHttp = false }) {
-  const { tools, state } = createTools(session, { allowedFiles, vision: Boolean(provider.vision), hosts, allowHttp });
+  const llm = asPool(provider);
+  const { tools, state } = createTools(session, { allowedFiles, vision: Boolean(llm.vision), hosts, allowHttp });
   const messages = [{ role: 'system', content: systemPrompt() }, { role: 'user', content: prompt }];
   const transcript = [];
   let badReplies = 0;
@@ -56,7 +58,7 @@ export async function runAgent({ provider, session, prompt, allowedFiles = [], m
     if (signal?.aborted) throw new Error('Stopped: out of time');
     if (!session.alive) throw new Error('The browser window was closed');
     compact(messages);
-    const { text } = await chat(provider, messages.map(({ role, content }) => ({ role, content })), { signal, maxTokens: 700 });
+    const { text } = await llm.chat(messages.map(({ role, content }) => ({ role, content })), { signal, maxTokens: 700 });
     messages.push({ role: 'assistant', content: text });
     const action = extractJson(text);
     if (!action || typeof action.tool !== 'string') {

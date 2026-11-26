@@ -5,7 +5,8 @@ import os from 'node:os';
 import { spawnNodeScript, findClaude, claudeAuthStatus, openTerminal, CLAUDE_INSTALL_COMMAND, claudeLoginCommand, IN_ELECTRON, findClaudeExtension } from './platform.js';
 import { testChromeConnection, runTestAutomation, runApiTest, composePost, composeComment, composeImages, IMAGE_SIZES } from './runner.js';
 import { PRESETS, chat, listModels, LlmError } from './ai/llm.js';
-import { listProviders, getProvider, getActiveProvider, addProvider, updateProvider, deleteProvider, ProviderError } from './ai/providers.js';
+import { listProviders, getProvider, getEnabledProviders, addProviders, updateProvider, deleteProvider, deleteAllProviders, ProviderError } from './ai/providers.js';
+import { createPool } from './ai/pool.js';
 import { findChrome } from './ai/cdp.js';
 import { createLocalBrowser } from './ai/localbrowser.js';
 import path from 'node:path';
@@ -290,7 +291,7 @@ export function createApp(db, p, { browser } = {}) {
   // Which AI writes in Compose: the provider chosen in Settings, or Claude Code when that engine is picked.
   const writerOpts = () => {
     const st = getSettings(db);
-    return st.engine === 'claude' ? { model: st.model || 'sonnet' } : { apiEngine: true, provider: getActiveProvider(db) };
+    return st.engine === 'claude' ? { model: st.model || 'sonnet' } : { apiEngine: true, provider: createPool(db) };
   };
 
   // ---- the AI writer in Compose: Claude (on the person's own subscription) writes post options from a brief.
@@ -729,18 +730,19 @@ export function createApp(db, p, { browser } = {}) {
   // The 'api' engine: an AI provider + the person's Chrome. No Claude subscription involved.
   function apiSetupState() {
     const settings = getSettings(db);
-    const provider = getActiveProvider(db);
+    const enabled = getEnabledProviders(db);
+    const provider = enabled.length ? { name: `${enabled.length} AI model${enabled.length === 1 ? '' : 's'}`, model: settings.ai_strategy === 'failover' ? 'in order' : 'in rotation' } : null;
     const chrome = findChrome();
     const s = {
       platform: process.platform, engine: 'api', app: Boolean(browser),
-      provider: provider ? { id: provider.id, name: provider.name, model: provider.model } : null,
+      provider,
       chrome_path: chrome, chrome_installed: Boolean(chrome),
       app_accounts: db.prepare("SELECT COUNT(*) AS n FROM accounts WHERE login_state = 'connected'").get().n,
       verified_at: settings.setup_verified_at || null,
     };
-    const sameProvider = !settings.setup_verified_account || settings.setup_verified_account === `api:${provider?.id}`;
+    const sameProvider = !settings.setup_verified_account || settings.setup_verified_account === 'api';
     const checks = [
-      { id: 'provider', label: 'An AI provider is set up', todo: 'add an AI provider in Settings', ok: Boolean(provider) },
+      { id: 'provider', label: 'An AI model is set up', todo: 'add an AI model in Settings', ok: Boolean(provider) },
       { id: 'chrome', label: 'Chrome or Edge is installed', todo: 'install Google Chrome', ok: s.chrome_installed },
       { id: 'extension', label: 'An account is logged in', todo: 'log in to an account on the Accounts page', ok: s.app_accounts > 0 },
       { id: 'automation', label: 'Test automation passed', todo: 'run the test automation', ok: Boolean(s.verified_at) && sameProvider },
@@ -768,9 +770,9 @@ export function createApp(db, p, { browser } = {}) {
     try {
       if (s.engine === 'api') {
         const account = db.prepare("SELECT * FROM accounts WHERE login_state = 'connected' ORDER BY is_default DESC, id LIMIT 1").get();
-        result = await runApiTest(getActiveProvider(db), p, account, { visible: getSettings(db).browser_visible !== '0' });
+        result = await runApiTest(createPool(db), p, account, { visible: getSettings(db).browser_visible !== '0' });
         setSetting(db, 'setup_verified_at', result.ok ? nowIso() : '');
-        setSetting(db, 'setup_verified_account', result.ok ? `api:${s.provider.id}` : '');
+        setSetting(db, 'setup_verified_account', result.ok ? 'api' : '');
         return res.json({ ...result, setup: setupState() });
       }
       // With an account logged in inside the app, the test drives the app's own window instead of Chrome.
@@ -796,7 +798,7 @@ export function createApp(db, p, { browser } = {}) {
   });
 
   // ---- AI providers (the 'api' engine and the Compose writer)
-  const providerView = () => ({ providers: listProviders(db), presets: PRESETS, engine: getSettings(db).engine });
+  const providerView = () => ({ providers: listProviders(db), presets: PRESETS, engine: getSettings(db).engine, strategy: getSettings(db).ai_strategy });
   const providerFrom = (body, id) => {
     const saved = id ? getProvider(db, id) : null;
     return { base_url: String(body.base_url ?? saved?.base_url ?? '').trim(), model: String(body.model ?? saved?.model ?? '').trim(),
@@ -804,7 +806,7 @@ export function createApp(db, p, { browser } = {}) {
   };
   app.get('/api/ai/providers', (req, res) => res.json(providerView()));
   app.post('/api/ai/providers', (req, res) => {
-    try { addProvider(db, req.body ?? {}); } catch (e) { if (e instanceof ProviderError) throw new HttpError(400, e.message); throw e; }
+    try { addProviders(db, req.body ?? {}); } catch (e) { if (e instanceof ProviderError) throw new HttpError(400, e.message); throw e; }
     res.status(201).json(providerView());
   });
   app.patch('/api/ai/providers/:id', (req, res) => {
@@ -814,11 +816,13 @@ export function createApp(db, p, { browser } = {}) {
     res.json(providerView());
   });
   app.delete('/api/ai/providers/:id', (req, res) => { deleteProvider(db, Number(req.params.id)); res.json(providerView()); });
-  app.post('/api/ai/providers/:id/activate', (req, res) => {
-    if (!getProvider(db, Number(req.params.id))) throw new HttpError(404, 'Provider not found');
-    setSetting(db, 'ai_provider_id', String(Number(req.params.id)));
+  app.delete('/api/ai/providers', (req, res) => { deleteAllProviders(db); res.json(providerView()); });
+  // Clears the rest period of every model, e.g. after a quota reset or a new key.
+  app.post('/api/ai/providers/reset', (req, res) => {
+    db.prepare("UPDATE ai_providers SET cooldown_until = 0, last_error = ''").run();
     res.json(providerView());
   });
+
   // Sends one tiny request, to check the URL, key and model.
   app.post('/api/ai/providers/test', async (req, res) => {
     const prov = providerFrom(req.body ?? {}, req.body?.id);
@@ -856,6 +860,9 @@ export function createApp(db, p, { browser } = {}) {
           setSetting(db, key, value);
           setSetting(db, 'setup_verified_at', ''); // the test has to pass again with the new engine
         }
+      } else if (key === 'ai_strategy') {
+        if (!['rotate', 'failover'].includes(value)) throw new HttpError(400, 'Strategy must be rotate or failover');
+        setSetting(db, key, value);
       } else if (key === 'browser_visible') {
         setSetting(db, key, value === '0' || value === false ? '0' : '1');
       } else if (key === 'join_about') {

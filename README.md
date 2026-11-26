@@ -31,6 +31,15 @@ Open **Settings → AI engine → Add provider**, pick a provider, paste its key
 | Ollama | `http://127.0.0.1:11434/v1` | none |
 | OpenAI / Groq / others | their OpenAI-compatible URL | their key |
 
+**Many models, many keys.** Add as many as you like at once: pick several models, paste several keys (one per line) and PostVane makes one entry
+for every model and key. With OpenRouter, tick **Show free models only** and **Select all free models**.
+- **Take turns** (default): each post starts with the model used longest ago, so the free limits of all of them are spread out.
+- **Use the first one until it runs out:** always the first model that isn't resting.
+
+When a model hits its limit (or its key is refused) PostVane rests it, 15 minutes for a rate limit, a few hours for a daily quota,
+a day for a bad key, and carries on with the next one, even in the middle of a post. Rested models are marked in Settings
+and come back by themselves (**Wake all up now** brings them back early).
+
 Any server that speaks the OpenAI chat API works (LM Studio, vLLM, Together, your own). Keys are stored only in this computer's database.
 The AI works from a text list of what is on the page, so a model does not need to see images. Stronger models post more reliably; very small ones
 often get lost on Facebook. If a free model hits its limit, the worker pauses for an hour and tries again.

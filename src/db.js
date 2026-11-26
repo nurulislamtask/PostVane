@@ -90,7 +90,8 @@ export const DEFAULT_SETTINGS = {
   setup_verified_account: '',
   // 'api': the AI provider chosen in Settings drives PostVane's own Chrome (free options exist). 'claude': Claude Code + Claude in Chrome.
   engine: 'api',
-  ai_provider_id: '',
+  // 'rotate': spread posts over all models in turn. 'failover': always the first one that isn't resting.
+  ai_strategy: 'rotate',
   // '1': the posting window is on screen while it works, so you can step in on a security check.
   browser_visible: '1',
 };
@@ -103,6 +104,12 @@ export function openDb(file) {
   db.exec(`CREATE TABLE IF NOT EXISTS ai_providers(
     id INTEGER PRIMARY KEY, name TEXT NOT NULL, kind TEXT NOT NULL, base_url TEXT NOT NULL,
     api_key TEXT NOT NULL DEFAULT '', model TEXT NOT NULL, vision INTEGER NOT NULL DEFAULT 0)`);
+  // Pool columns: on/off, when a model that hit its limit is tried again, and which one was used longest ago.
+  const have = new Set(db.prepare('PRAGMA table_info(ai_providers)').all().map((c) => c.name));
+  for (const [col, ddl] of [['enabled', 'INTEGER NOT NULL DEFAULT 1'], ['cooldown_until', 'INTEGER NOT NULL DEFAULT 0'],
+    ['last_used_at', 'INTEGER NOT NULL DEFAULT 0'], ['last_error', "TEXT NOT NULL DEFAULT ''"]]) {
+    if (!have.has(col)) db.exec(`ALTER TABLE ai_providers ADD COLUMN ${col} ${ddl}`);
+  }
   // Databases created before multi-platform support get the column; existing rows become 'facebook'.
   const cols = db.prepare('PRAGMA table_info(destinations)').all().map((c) => c.name);
   if (!cols.includes('platform')) {

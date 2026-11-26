@@ -308,8 +308,8 @@ function SetupApi({ s, status, onStatusChange, go, check, checking, autoTest, te
           Check again
         </Button>
       }>
-        <Step n={1} done={providerOk} title="Add an AI provider">
-          {providerOk ? <>Using <strong>{s.provider.name}</strong> ({s.provider.model}).</> : <>Add OpenRouter, Google Gemini, Ollama or any OpenAI-compatible URL.</>}
+        <Step n={1} done={providerOk} title="Add AI models">
+          {providerOk ? <><strong>{s.provider.name}</strong> switched on, {s.provider.model}.</> : <>Add models from OpenRouter, Google Gemini, Ollama or any OpenAI-compatible URL. Several are fine: they take turns and cover for each other.</>}
           <Box mt={1.25}><Button variant={providerOk ? 'outlined' : 'contained'} onClick={() => go('settings')}>Open Settings</Button></Box>
         </Step>
         <Step n={2} done={ok('chrome')} title="Install Google Chrome (or Edge)">

@@ -33,7 +33,7 @@ test('chat sends the key and model, and classifies a rate limit', async () => {
     req.on('data', (d) => { body += d; });
     req.on('end', () => {
       res.setHeader('content-type', 'application/json');
-      if (req.url.endsWith('/models')) return res.end(JSON.stringify({ data: [{ id: 'models/b' }, { id: 'a' }] }));
+      if (req.url.endsWith('/models')) return res.end(JSON.stringify({ data: [{ id: 'models/b' }, { id: 'a' }, { id: 'c:free' }, { id: 'd', pricing: { prompt: '0', completion: '0' } }] }));
       if (JSON.parse(body).model === 'limited') { res.statusCode = 429; return res.end(JSON.stringify({ error: { message: 'Quota exceeded' } })); }
       n++;
       res.end(JSON.stringify({ choices: [{ message: { content: `ok ${req.headers.authorization}` } }] }));
@@ -43,7 +43,7 @@ test('chat sends the key and model, and classifies a rate limit', async () => {
   const p = { base_url: `http://127.0.0.1:${port}/v1/`, api_key: 'k123', model: 'm' };
   assert.equal((await chat(p, [{ role: 'user', content: 'hi' }])).text, 'ok Bearer k123');
   await assert.rejects(chat({ ...p, model: 'limited' }, [{ role: 'user', content: 'hi' }], { retries: 0 }), (e) => e instanceof LlmError && e.kind === 'rate_limit');
-  assert.deepEqual(await listModels(p), ['a', 'b']);
+  assert.deepEqual(await listModels(p), [{ id: 'a', free: false }, { id: 'b', free: false }, { id: 'c:free', free: true }, { id: 'd', free: true }]);
   server.close();
 });
 

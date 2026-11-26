@@ -87,7 +87,7 @@ test('scheduling a post with an image to two destinations creates two jobs', asy
   assert.equal(after.find((j) => j.destination_id === a.id).status, 'cancelled');
 });
 
-test('files over 10 MB are refused with a message', async () => {
+test('files over 10 MB are accepted: the api engine puts them straight into Chrome', async () => {
   const d = await (await json('POST', '/api/destinations', { name: 'C', type: 'page', url: 'https://www.facebook.com/c' })).json();
   const form = new FormData();
   form.append('body', 'big');
@@ -95,8 +95,8 @@ test('files over 10 MB are refused with a message', async () => {
   form.append('destination_ids', String(d.id));
   form.append('media', new Blob([new Uint8Array(10 * 1024 * 1024 + 1)], { type: 'video/mp4' }), 'big.mp4');
   const r = await fetch(`${base}/api/posts`, { method: 'POST', body: form });
-  assert.equal(r.status, 400);
-  assert.match((await r.json()).error, /10 MB/);
+  await r.text();
+  assert.equal(r.status, 201);
 });
 
 test('job transitions: cancel queued, retry cancelled, cannot mark queued as posted', async () => {

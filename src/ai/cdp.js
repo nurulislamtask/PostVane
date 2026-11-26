@@ -2,9 +2,16 @@
 // folder per account, so each account logs in once and stays logged in. No browser download and no extra packages.
 import fs from 'node:fs';
 import path from 'node:path';
-import { spawn } from 'node:child_process';
+import { spawn, spawnSync } from 'node:child_process';
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+
+function killTree(child) {
+  try {
+    if (process.platform === 'win32' && child.pid) spawnSync('taskkill', ['/pid', String(child.pid), '/T', '/F'], { stdio: 'ignore' });
+    else child.kill('SIGKILL');
+  } catch { /* already gone */ }
+}
 
 /** The Chrome, Edge or Chromium program to use, or null. POSTVANE_CHROME overrides the search. */
 export function findChrome({ env = process.env, platform = process.platform, exists = fs.existsSync } = {}) {
@@ -209,11 +216,15 @@ export class ChromeSession {
     return r.cookies || [];
   }
 
+  /** Closes Chrome and waits until it is really gone, so its profile folder is free again. */
   async close() {
-    try { await this.cdp.send('Browser.close'); } catch { /* it may already be gone */ }
+    try { await Promise.race([this.cdp.send('Browser.close'), sleep(3000)]); } catch { /* it may already be gone */ }
     this.cdp.close();
-    await sleep(300);
-    if (!this.exited) { try { this.child.kill(); } catch { /* gone */ } }
+    for (let i = 0; i < 60 && !this.exited; i++) await sleep(100);
+    if (!this.exited) {
+      killTree(this.child);
+      for (let i = 0; i < 30 && !this.exited; i++) await sleep(100);
+    }
   }
 }
 
@@ -233,6 +244,7 @@ export async function launchChrome({ profileDir, url = 'about:blank', visible = 
     url,
   ];
   const child = spawn(exe, args, { stdio: 'ignore', windowsHide: false });
+  child.unref(); // a window the person keeps open must not keep PostVane's own process alive
   let early = null;
   child.on('exit', (code) => { early = code; });
   child.on('error', (e) => { early = e.message; });
@@ -248,7 +260,7 @@ export async function launchChrome({ profileDir, url = 'about:blank', visible = 
     await sleep(150);
   }
   if (!info) {
-    try { child.kill(); } catch { /* gone */ }
+    killTree(child);
     throw new Error(early !== null ? 'This account\'s browser window is already open. Close it and try again.' : 'The browser did not start in time');
   }
   const cdp = await Cdp.connect(`ws://127.0.0.1:${info.port}${info.wsPath}`);

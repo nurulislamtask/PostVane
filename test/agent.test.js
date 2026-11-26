@@ -89,7 +89,7 @@ test('the agent types and posts in a real Chrome, and reports the result block',
   } finally {
     await session.close();
     web.close(); llm.close();
-    fs.rmSync(profile, { recursive: true, force: true });
+    try { fs.rmSync(profile, { recursive: true, force: true, maxRetries: 8, retryDelay: 300 }); } catch { /* Windows may still hold a file */ }
   }
 });
 
@@ -114,6 +114,6 @@ test('navigate refuses sites that are not social networks', { skip: !findChrome(
     assert.match(res.finish.note, /^Error: Only /);
   } finally {
     await session.close(); llm.close();
-    fs.rmSync(profile, { recursive: true, force: true });
+    try { fs.rmSync(profile, { recursive: true, force: true, maxRetries: 8, retryDelay: 300 }); } catch { /* Windows may still hold a file */ }
   }
 });

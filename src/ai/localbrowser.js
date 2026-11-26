@@ -54,7 +54,7 @@ export function createLocalBrowser({ paths, db }) {
       const s = open.get(a.id);
       if (s?.alive) await s.close();
       open.delete(a.id);
-      fs.rmSync(profileDir(paths, a.id), { recursive: true, force: true });
+      fs.rmSync(profileDir(paths, a.id), { recursive: true, force: true, maxRetries: 8, retryDelay: 300 });
     },
     /** Turns a self-contained HTML design into a PNG (AI images). */
     async renderHtml(html, w, h) {
@@ -67,7 +67,7 @@ export function createLocalBrowser({ paths, db }) {
         return Buffer.from(r.data, 'base64');
       } finally {
         await session.close();
-        fs.rmSync(dir, { recursive: true, force: true });
+        try { fs.rmSync(dir, { recursive: true, force: true, maxRetries: 8, retryDelay: 300 }); } catch { /* temp folder */ }
       }
     },
     async fetchPages() { return null; },

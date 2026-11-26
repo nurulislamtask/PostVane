@@ -9,7 +9,7 @@
     "worker": "node --disable-warning=ExperimentalWarning src/worker.js",
     "dev": "vite --config web/vite.config.js",
     "build": "vite build --config web/vite.config.js",
-    "test": "node --disable-warning=ExperimentalWarning --test \"test/*.test.js\"",
+    "test": "node --disable-warning=ExperimentalWarning --test --test-timeout=240000 \"test/*.test.js\"",
     "app": "npm run build && electron .",
     "dist": "npm run build && electron-builder",
     "dist:mac": "npm run build && electron-builder --mac",
